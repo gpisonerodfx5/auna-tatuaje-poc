@@ -1,0 +1,132 @@
+{
+  "Comment": "PoC Tatuaje Auna v2.1 — Flujo por afiliado. Disparado por SQS (1 msg = 1 afiliado).",
+  "StartAt": "ValidarHorario",
+  "States": {
+    "ValidarHorario": {
+      "Type": "Choice",
+      "Comment": "Estado 0: Verifica si estamos en horario laboral Peru (L-V 9-19, S 9-13 UTC-5)",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.force_run",
+              "BooleanEquals": true
+            }
+          ],
+          "Next": "ConsultarBlacklist"
+        }
+      ],
+      "Default": "EsperarHorario"
+    },
+    "EsperarHorario": {
+      "Type": "Wait",
+      "Comment": "Espera hasta el proximo slot valido de horario laboral",
+      "Seconds": 300,
+      "Next": "ConsultarBlacklist"
+    },
+    "ConsultarBlacklist": {
+      "Type": "Task",
+      "Comment": "Estado 1: Consulta DynamoDB blacklist directamente (sin Lambda)",
+      "Resource": "arn:aws:states:::dynamodb:getItem",
+      "Parameters": {
+        "TableName": "auna-tatuaje-poc-blacklist",
+        "Key": {
+          "telefono": {
+            "S.$": "$.telefono"
+          }
+        }
+      },
+      "ResultPath": "$.blacklist_result",
+      "Next": "EvaluarBlacklist",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.blacklist_error",
+          "Next": "HealthCheck"
+        }
+      ]
+    },
+    "EvaluarBlacklist": {
+      "Type": "Choice",
+      "Comment": "Si tiene 3+ intentos fallidos y activo=true, termina",
+      "Choices": [
+        {
+          "And": [
+            {
+              "Variable": "$.blacklist_result.Item.activo.BOOL",
+              "BooleanEquals": true
+            },
+            {
+              "Variable": "$.blacklist_result.Item.intentos_fallidos.N",
+              "StringGreaterThanEquals": "3"
+            }
+          ],
+          "Next": "EnBlacklist"
+        }
+      ],
+      "Default": "HealthCheck"
+    },
+    "EnBlacklist": {
+      "Type": "Succeed",
+      "Comment": "Numero en blacklist, no llamar"
+    },
+    "HealthCheck": {
+      "Type": "Task",
+      "Comment": "Estado 2: Ping API Multisede via Lambda Health Check",
+      "Resource": "${HealthCheckLambdaArn}",
+      "ResultPath": "$.health",
+      "Next": "EvaluarHealthCheck",
+      "Retry": [
+        {
+          "ErrorEquals": ["States.TaskFailed"],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ]
+    },
+    "EvaluarHealthCheck": {
+      "Type": "Choice",
+      "Comment": "Si API disponible, continuar. Si no, esperar y reintentar.",
+      "Choices": [
+        {
+          "Variable": "$.health.api_available",
+          "BooleanEquals": true,
+          "Next": "RegistrarInicio"
+        }
+      ],
+      "Default": "EsperarAPICaida"
+    },
+    "EsperarAPICaida": {
+      "Type": "Wait",
+      "Seconds": 300,
+      "Next": "HealthCheck"
+    },
+    "RegistrarInicio": {
+      "Type": "Task",
+      "Comment": "Estado 3: Registra inicio de llamada en DynamoDB",
+      "Resource": "arn:aws:states:::dynamodb:putItem",
+      "Parameters": {
+        "TableName": "auna-tatuaje-poc-interacciones",
+        "Item": {
+          "call_id": { "S.$": "$.call_id" },
+          "afiliado_dni": { "S.$": "$.dni" },
+          "afiliado_nombre": { "S.$": "$.nombre_completo" },
+          "telefono": { "S.$": "$.telefono" },
+          "sede_referencia": { "S.$": "$.sede_referencia" },
+          "programa": { "S.$": "$.programa" },
+          "cuotas_pagadas": { "S.$": "$.cuotas_pagadas" },
+          "grupo_cuota": { "S.$": "$.grupo_cuota" },
+          "timestamp_inicio": { "S.$": "$$.State.EnteredTime" },
+          "resultado": { "S": "iniciando" }
+        }
+      },
+      "ResultPath": "$.dynamo_result",
+      "Next": "IniciarLlamada"
+    },
+    "IniciarLlamada": {
+      "Type": "Succeed",
+      "Comment": "Estado 4: Aqui se invocaria Connect StartOutboundVoiceContact. En la PoC, Connect + Nova Sonic 2 manejan la conversacion y llaman a las Lambdas de accion (validar_paciente, disponibilidad, crear_cita) via tool calls."
+    }
+  }
+}

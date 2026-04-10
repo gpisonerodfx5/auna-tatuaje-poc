@@ -1,0 +1,28 @@
+# Dependencias locales
+tmp_pkg/
+dist/
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# Datos sensibles — NUNCA al repo
+data/
+*.csv
+*.xlsx
+*.xls
+
+# Outputs de pruebas locales
+*_out.json
+*_out*.json
+ids_output.json
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# AWS credentials
+.aws/
+credentials

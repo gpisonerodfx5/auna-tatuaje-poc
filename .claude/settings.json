@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:aws.amazon.com)",
+      "WebFetch(domain:zircon.tech)",
+      "Bash(aws bedrock:*)",
+      "Bash(aws bedrock-agent:*)",
+      "Bash(AWS_PROFILE=auna-sandbox python3 -)",
+      "Bash(aws sso:*)",
+      "Bash(aws lexv2-models:*)",
+      "Bash(python -c ':*)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\GabrielPisonero\\.aws"
+    ]
+  }
+}

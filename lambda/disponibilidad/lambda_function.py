@@ -34,8 +34,9 @@ _token_cache = {"token": None, "expires": 0}
 
 
 def lambda_handler(event, context):
-    logger.info(f"Disponibilidad: {json.dumps(event, default=str)[:500]}")
+    logger.info(f"Disponibilidad event: {json.dumps(event, default=str)[:1200]}")
     params = extract_params(event)
+    logger.info(f"Disponibilidad params: {json.dumps(params, default=str)[:800]}")
     try:
         result = handle_disponibilidad(params)
     except Exception as e:
@@ -53,11 +54,32 @@ def lambda_handler(event, context):
     return build_response(event, result)
 
 
+WEEKDAY_MAP = {
+    "lunes": 0, "martes": 1, "miercoles": 2, "miércoles": 2,
+    "jueves": 3, "viernes": 4, "sabado": 5, "sábado": 5, "domingo": 6,
+}
+
+
+def _normalize_dia_especifico(raw: str) -> int:
+    """Map spanish weekday name (any case/accent) to int 0-6 or -1 for none."""
+    if not raw:
+        return -1
+    key = raw.strip().lower()
+    # also accept digits
+    if key.isdigit():
+        v = int(key)
+        return v if 0 <= v <= 6 else -1
+    return WEEKDAY_MAP.get(key, -1)
+
+
 def handle_disponibilidad(params: dict) -> dict:
     center_id = int(params.get("center_id", 1))
     dias_adelante = int(params.get("dias_adelante", 60))
-    preferencia_dia = params.get("preferencia_dia", "cualquiera")      # "semana" | "finde" | "cualquiera"
-    preferencia_horario = params.get("preferencia_horario", "cualquiera")  # "manana" | "tarde" | "cualquiera"
+    preferencia_dia = (params.get("preferencia_dia", "cualquiera") or "cualquiera").strip().lower()
+    preferencia_horario = (params.get("preferencia_horario", "cualquiera") or "cualquiera").strip().lower()
+    dia_especifico = _normalize_dia_especifico(params.get("dia_especifico", ""))  # -1 = no filter
+    pagina_raw = params.get("pagina", "0") or "0"  # default "0" si viene vacio o None
+    pagina = int(pagina_raw) if pagina_raw.strip().isdigit() else 0
 
     token = get_multisede_token()
     headers = _build_headers(token)
@@ -94,7 +116,8 @@ def handle_disponibilidad(params: dict) -> dict:
     today = datetime.now(peru_tz).date()
     max_date = today + timedelta(days=dias_adelante)
 
-    opciones = []
+    # Recolecta TODAS las opciones disponibles primero, luego pagina.
+    todas_opciones = []
     for slot in filtered:
         slot_date_str = slot.get("date", "")[:10]
         try:
@@ -106,10 +129,14 @@ def handle_disponibilidad(params: dict) -> dict:
 
         # Filtro por preferencia de dia
         weekday = slot_date.weekday()  # 0=lunes ... 5=sabado, 6=domingo
-        if preferencia_dia == "semana" and weekday >= 5:
-            continue
-        if preferencia_dia == "finde" and weekday != 5:  # solo sabado (no domingo)
-            continue
+        if dia_especifico >= 0:
+            if weekday != dia_especifico:
+                continue
+        else:
+            if preferencia_dia == "semana" and weekday >= 5:
+                continue
+            if preferencia_dia in ("finde", "sabado") and weekday != 5:
+                continue
 
         schedules = slot.get("schedules", [])
         free_schedules = [s for s in schedules if s.get("status") == "LI"]
@@ -126,8 +153,8 @@ def handle_disponibilidad(params: dict) -> dict:
         doctor_name = slot.get("professionalName", "Doctor")
         center_name = slot.get("centerName", "Sede")
 
-        for sch in free_schedules[:2]:
-            opciones.append({
+        for sch in free_schedules:
+            todas_opciones.append({
                 "model_id": sch.get("modelId"),
                 "doctor_id": slot.get("professionalId"),
                 "doctor_name": doctor_name,
@@ -138,29 +165,119 @@ def handle_disponibilidad(params: dict) -> dict:
                 "hora": sch.get("time", ""),
                 "fecha_display": format_date_spanish(slot_date),
             })
-            if len(opciones) >= 3:  # max 3 opciones para no abrumar
-                break
-        if len(opciones) >= 3:
-            break
+
+    # Ordena por fecha+hora (la API ya devuelve ordenado pero por si acaso)
+    todas_opciones.sort(key=lambda o: (o["fecha"][6:10] + o["fecha"][3:5] + o["fecha"][0:2], o["hora"]))
+
+    # Espacia las opciones para que el caller vea variedad: en lugar de mostrar
+    # 13:00 13:10 13:20 (todos del mismo dia y casi misma hora), tomamos slots
+    # cada step para abarcar mas dias/horarios cuando hay muchas opciones.
+    total_disponibles = len(todas_opciones)
+    if total_disponibles > 9:
+        # Si hay mas de 9, espacia para que las paginas muestren slots distribuidos
+        step = max(1, total_disponibles // 9)
+        opciones_espaciadas = todas_opciones[::step][:9]
+        # Garantiza que tenemos al menos 9 si era posible
+        if len(opciones_espaciadas) < min(9, total_disponibles):
+            opciones_espaciadas = todas_opciones[:9]
+        opciones_paginables = opciones_espaciadas
+    else:
+        opciones_paginables = todas_opciones
+
+    logger.info(f"Total opciones disponibles: {total_disponibles}, paginables: {len(opciones_paginables)}")
+
+    # Paginacion: 3 opciones por pagina
+    inicio = pagina * 3
+    fin = inicio + 3
+    opciones = opciones_paginables[inicio:fin]
+    hay_mas = fin < len(opciones_paginables)
 
     if not opciones:
         # Si no hay con preferencia, informar para que el agente pregunte otra fecha
-        motivo = f"no hay horarios disponibles para su preferencia en los proximos {dias_adelante} dias"
+        horario_label = {"manana": "en la manana", "tarde": "en la tarde"}.get(preferencia_horario, "")
+        if dia_especifico >= 0:
+            dia_nombre = [k for k, v in WEEKDAY_MAP.items() if v == dia_especifico and len(k) <= 9][0]
+            motivo = f"no hay horarios disponibles para el {dia_nombre} {horario_label}".strip()
+            mensaje_natural = f"Lo siento, no encontre horarios disponibles para el {dia_nombre} {horario_label}. Quiere intentar con otro dia o cambiar el horario?".strip()
+        elif preferencia_dia == "sabado":
+            motivo = f"no hay horarios disponibles para sabado {horario_label}".strip()
+            mensaje_natural = f"Lo siento, no encontre horarios disponibles para sabado {horario_label}. Quiere intentar otro dia o cambiar el horario?".strip()
+        else:
+            motivo = f"no hay horarios disponibles para esa preferencia"
+            mensaje_natural = f"Lo siento, no encontre horarios disponibles para esa preferencia. Quiere intentar con otro dia u otro horario?"
         emit_metric("SinDisponibilidad", 1, dimensions={"sede": str(center_id)})
-        return {"disponible": False, "motivo": motivo}
+        return {
+            "disponible": False,
+            "motivo": motivo,
+            "opciones_texto_con_pregunta": mensaje_natural,
+            "opciones_texto": mensaje_natural,
+        }
 
-    opciones_texto = []
+    # Texto LARGO con todos los datos (para fallback / tracking)
+    opciones_texto_largo = []
     for i, op in enumerate(opciones, 1):
-        opciones_texto.append(
+        opciones_texto_largo.append(
             f"Opcion {i}: {op['fecha_display']} a las {op['hora'][:5]} "
             f"con {op['doctor_name']} en {op['center_name']}"
         )
+    texto_largo = ". ".join(opciones_texto_largo)
+
+    def _hora_amigable(hora_str: str) -> str:
+        h = int(hora_str.split(':')[0])
+        m = int(hora_str.split(':')[1])
+        if h == 0:
+            return "doce de la noche" if m == 0 else f"doce y {m:02d} de la noche"
+        if h < 12:
+            base = h
+            ampm = "de la manana"
+        elif h == 12:
+            return "doce del mediodia" if m == 0 else f"doce y {m:02d} del mediodia"
+        else:
+            base = h - 12
+            ampm = "de la tarde" if h < 19 else "de la noche"
+        return f"{base} {ampm}" if m == 0 else f"{base} y {m:02d} {ampm}"
+
+    def _primer_nombre(full: str) -> str:
+        # "Mauricio Alejandro Rodriguez Moscoso" -> "Mauricio Rodriguez"
+        parts = full.strip().split()
+        if len(parts) >= 2:
+            return f"{parts[0]} {parts[-2] if len(parts) >= 3 else parts[-1]}"
+        return full
+
+    # Texto natural y conversacional con dia + mes + hora + doctor en cada opcion.
+    # NOTA: la SEDE NO se menciona aqui — en la PoC todas las opciones vienen de la
+    # misma sede (no hay capacidad de filtrar por sede del usuario porque Multisede
+    # no expone la ciudad del afiliado, solo direccion como texto libre).
+    # Va al MessageParticipant del flow que lee LITERAL — no depende de Nova Pro.
+    opciones_texto_corto = []
+    for i, op in enumerate(opciones, 1):
+        # fecha_display ej: "jueves 16 de abril de 2026" -> "jueves 16 de abril"
+        partes = op['fecha_display'].split(' de ')
+        if len(partes) >= 2:
+            fecha_natural = f"{partes[0]} de {partes[1]}"  # "jueves 16 de abril"
+        else:
+            fecha_natural = op['fecha_display']
+        hora_str = _hora_amigable(op['hora'][:5])
+        doc = _primer_nombre(op['doctor_name'])
+        # "opcion uno: jueves 16 de abril a la una de la tarde con el doctor Mauricio Rodriguez"
+        ord_palabras = {1: "uno", 2: "dos", 3: "tres"}
+        opciones_texto_corto.append(
+            f"opcion {ord_palabras.get(i, str(i))}: {fecha_natural} a las {hora_str} con el doctor {doc}"
+        )
+
+    texto_opciones = ". ".join(opciones_texto_corto)
+    texto_con_pregunta = f"Tengo tres opciones para usted. {texto_opciones}. Cual de estas opciones prefiere?"
+    logger.info(f"opciones_texto devuelto (pagina={pagina}): {texto_largo}")
+    texto_final = texto_largo  # backward-compat name
 
     return {
         "disponible": True,
         "cantidad_opciones": len(opciones),
-        "opciones_texto": ". ".join(opciones_texto),
+        "opciones_texto": texto_final,
+        "opciones_texto_con_pregunta": texto_con_pregunta,
         "opciones": opciones,
+        "hay_mas": hay_mas,
+        "pagina": pagina,
     }
 
 

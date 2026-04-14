@@ -71,7 +71,7 @@ def handle_validar(params: dict) -> dict:
         f"{MULTISEDE_BASE_URL}/maintainers/v1/search-patient/pe",
         headers=headers,
         json={"document_number": dni, "pagination": {"number": 1, "size": 5}},
-        timeout=15,
+        timeout=5,
     )
 
     if response.status_code == 404 or (response.status_code == 200 and not response.json().get("results")):
@@ -93,7 +93,12 @@ def handle_validar(params: dict) -> dict:
     logger.info(f"Paciente encontrado: id={patient_id} | {first_name} {last_name}")
 
     # Enriquecer con datos de poliza
-    policy_data = _get_insurance_policy(dni, token)
+    try:
+        policy_data = _get_insurance_policy(dni, token)
+    except Exception as e:
+        logger.warning(f"Skipping policy enrichment: {e}")
+        policy_data = None
+
     if policy_data:
         mother_last_name = policy_data.get("holderMotherLastName", mother_last_name)
         holder_last = policy_data.get("holderLastName", "")
@@ -126,21 +131,22 @@ def _build_headers(token: str) -> dict:
 
 
 def _get_insurance_policy(document: str, token: str) -> dict | None:
+    """Enriquece con datos de poliza. Timeout agresivo para no exceder 8s de Connect."""
     headers = _build_headers(token)
-    for doc_type in [1, 6]:
-        try:
-            response = requests.get(
-                f"{MULTISEDE_BASE_URL}/insurance-client/v4/pe/policies",
-                headers=headers,
-                params={"centerId": 4, "document": document, "documentTypeId": doc_type, "funderId": FUNDER_ID},
-                timeout=10,
-            )
-            if response.status_code == 200:
-                results = response.json().get("results", [])
-                if results:
-                    return results[0]
-        except Exception as e:
-            logger.warning(f"Error poliza (docType={doc_type}): {e}")
+    # Solo intentamos docType=1 (DNI) con timeout corto para mantenernos bajo 8s total
+    try:
+        response = requests.get(
+            f"{MULTISEDE_BASE_URL}/insurance-client/v4/pe/policies",
+            headers=headers,
+            params={"centerId": 4, "document": document, "documentTypeId": 1, "funderId": FUNDER_ID},
+            timeout=2,
+        )
+        if response.status_code == 200:
+            results = response.json().get("results", [])
+            if results:
+                return results[0]
+    except Exception as e:
+        logger.warning(f"Error poliza: {e}")
     return None
 
 

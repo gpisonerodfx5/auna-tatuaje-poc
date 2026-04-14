@@ -45,7 +45,7 @@ LAMBDA_CREAR   = "arn:aws:lambda:us-east-1:769488154338:function:auna-tatuaje-po
 # TSTALIASID apunta a DRAFT con en_US + Nova Sonic + AMAZON.QinConnectIntent
 LEX_BOT_ALIAS_ARN_DEFAULT = "arn:aws:lex:us-east-1:769488154338:bot-alias/EWU1UPLT9U/TSTALIASID"
 # Usar ultima version publicada del agente
-AI_AGENT_VERSION = "680d88d1-66c1-4fa9-b882-d14649de998a:28"
+AI_AGENT_VERSION = "680d88d1-66c1-4fa9-b882-d14649de998a:30"
 AI_AGENT_ARN = f"arn:aws:wisdom:us-east-1:769488154338:ai-agent/bac452c1-14b3-4252-8c5a-af9e02faca9a/{AI_AGENT_VERSION}"
 AI_AGENT_ARN_LATEST = f"arn:aws:wisdom:us-east-1:769488154338:ai-agent/bac452c1-14b3-4252-8c5a-af9e02faca9a/680d88d1-66c1-4fa9-b882-d14649de998a:$LATEST"
 
@@ -119,7 +119,7 @@ flow = {
             "Type": "InvokeLambdaFunction",
             "Parameters": {
                 "LambdaFunctionARN": LAMBDA_VALIDAR,
-                "InvocationTimeLimitSeconds": "8",
+                "InvocationTimeLimitSeconds": "15",
                 "InvocationType": "SYNCHRONOUS",
                 "LambdaInvocationAttributes": {
                     "dni": "$.Attributes.dni",
@@ -387,7 +387,23 @@ flow = {
             },
             "Transitions": {
                 "NextAction": "save-crear",
-                "Errors": [{"NextAction": "save-crear", "ErrorType": "NoMatchingError"}]
+                "Errors": [{"NextAction": "set-crear-error", "ErrorType": "NoMatchingError"}]
+            }
+        },
+        # 12b. Si invoke-crear falla (timeout/error), setear cita_exito=false explicitamente
+        {
+            "Identifier": "set-crear-error",
+            "Type": "UpdateContactAttributes",
+            "Parameters": {
+                "Attributes": {
+                    "cita_exito": "false",
+                    "cita_mensaje": "Error al procesar la cita"
+                },
+                "TargetContact": "Current"
+            },
+            "Transitions": {
+                "NextAction": "get-customer-input",
+                "Errors": [{"NextAction": "get-customer-input", "ErrorType": "NoMatchingError"}]
             }
         },
         # 13. Guardar resultado de crear cita y volver al agente

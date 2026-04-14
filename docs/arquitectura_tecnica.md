@@ -64,25 +64,31 @@ Contact Flow: auna-tatuaje-poc-inbound-test
             │
             ▼
     Amazon Q in Connect — AI Agent (Orchestration)
-    "Valentina" — modelo Nova Sonic 2 (speech-to-speech)
-    Prompt v22 — tools: ConsultarDisponibilidad, CrearCita, COMPLETE, Escalate
+    "Valentina" — LLM: Nova Pro (us.amazon.nova-pro-v1:0)
+    Prompt :37, Agent :37 — tools: ConsultarDisponibilidad, CrearCita, COMPLETE, Escalate
+    [voz via Nova Sonic 2 — STT/TTS en Lex locale]
             │
             │ tool call → NoMatchingCondition → Contact Flow retoma control
             ▼
     [save-tool-name] → [dispatch] Compare tool_name
             │
             ├─ "ConsultarDisponibilidad"
-            │       ├─ [invoke-disp] Lambda ConsultarDisponibilidad
-            │       ├─ [save-disp] contact attributes con slots reales
-            │       ├─ [play-opciones] MessageParticipant lee opciones_texto en voz alta
-            │       └─ vuelve a [get-customer-input]
+            │       ├─ [play-espera-disp] MessageParticipant "Perfecto, un momento mientras reviso..."
+            │       ├─ [invoke-disp] Lambda ConsultarDisponibilidad (pasa pagina=$.Lex.SessionAttributes.pagina)
+            │       ├─ [save-disp] guarda opciones_N_*, hay_mas, pagina_actual, opciones_texto_con_pregunta
+            │       ├─ [play-opciones] MessageParticipant lee $.Attributes.opciones_texto_con_pregunta (incluye "¿Cuál prefiere la 1, 2 o 3?")
+            │       └─ [get-customer-input-disp] GCI secundario (Text=" "), contexto: no repetir pregunta
+            │               ├─ "CrearCita"   → dispatch → invoke-crear
+            │               ├─ "ConsultarDisponibilidad" (otro filtro o más opciones) → dispatch → play-espera-disp → invoke-disp (loop)
+            │               └─ "COMPLETE"   → dispatch → play-farewell → disconnect
             │
             ├─ "CrearCita"
             │       ├─ [invoke-crear] Lambda CrearCita
             │       ├─ [save-crear] contact attributes con resultado
-            │       └─ vuelve a [get-customer-input]
+            │       └─ [get-customer-input-crear] GCI terciario (Nova Pro confirma cita)
+            │               └─ "COMPLETE" → dispatch → play-farewell → disconnect
             │
-            ├─ "COMPLETE" → [disconnect]
+            ├─ "COMPLETE" → [play-farewell] MessageParticipant → [disconnect]
             └─ "Escalate"  → [disconnect]
                     │
     Lambda ValidarPaciente ──────────────────────┐
@@ -106,25 +112,33 @@ Contact Flow: auna-tatuaje-poc-inbound-test
 - **Costo:** ~$0.038/min voz + telefonía outbound Perú
 
 ### Amazon Lex V2
-- **Propósito:** Bot de conversación que actúa como puente entre Connect y Q in Connect. Activa el intent `AMAZON.QinConnectIntent` que habilita el AI Agent de Nova Sonic.
+- **Propósito:** Bot de conversación que actúa como puente entre Connect y Q in Connect. Activa el intent `AMAZON.QinConnectIntent` que habilita el AI Agent.
 - **Bot:** `auna-valentina-v5` (ID: `EWU1UPLT9U`)
-- **Alias:** `TSTALIASID` (DRAFT con es_US + Nova Sonic + QinConnectIntent habilitado)
-- **Locale:** `es_US`
-- **Speech model:** Amazon Nova Sonic (speech-to-speech nativo)
-- **Configuración crítica:** El bot debe crearse desde Connect Admin (no desde consola Lex) para que los permisos se asignen automáticamente.
+- **Alias:** `TSTALIASID` (DRAFT)
+- **Locale:** `en_US` (único locale construido)
+- **Speech model:** `amazon.nova-2-sonic-v1:0` (Nova Sonic 2) — convierte voz→texto del afiliado y texto→voz de las respuestas
+- **Configuración crítica:** Requiere rebuild después de cada actualización de versión del AI Agent para limpiar caché de Q Connect.
 
 ### Amazon Q in Connect (Wisdom)
-- **Propósito:** Motor del agente conversacional. Orquesta la conversación, decide cuándo invocar tools y genera las respuestas de voz a través de Nova Sonic.
+- **Propósito:** Motor del agente conversacional. Orquesta la conversación, decide cuándo invocar tools y genera el texto de las respuestas.
 - **Assistant:** `bac452c1-14b3-4252-8c5a-af9e02faca9a`
 - **AI Agent:** `680d88d1-66c1-4fa9-b882-d14649de998a` (tipo: ORCHESTRATION)
-- **Prompt activo:** versión 22
-- **Agent version activo:** versión 22
-- **Modelo de voz:** Amazon Nova Sonic 2 (`amazon.nova-2-sonic-v1:0`) — sin Transcribe ni Polly
+- **Prompt activo:** versión **:37**
+- **Agent version activo:** versión **:37**
+- **Modelo LLM:** Amazon Nova Pro (`us.amazon.nova-pro-v1:0`) — es el orchestration model de Q Connect. Nova Sonic 2 actúa como STT/TTS a nivel del Lex locale; Nova Pro genera las respuestas de conversación.
 - **Tools (Return to Control):**
-  - `ConsultarDisponibilidad` — busca slots en Multisede
+  - `ConsultarDisponibilidad` — busca slots en Multisede (soporta `pagina` 0-3, retorna `hay_mas`)
   - `CrearCita` — agenda la cita confirmada
-  - `COMPLETE` — cierra la llamada
+  - `COMPLETE` — cierra la llamada (el flow desconecta automáticamente, Nova Pro no espera respuesta)
   - `Escalate` — transfiere a humano
+- **Constraint crítico:** `$.Attributes.*` NO interpola en `ConnectParticipantWithLexBot.Text` ni en `LexSessionAttributes`. Solo interpola en `MessageParticipant` e `InvokeLambdaFunction.LambdaInvocationAttributes`.
+
+### Stack de modelos completo
+| Capa | Modelo | Rol |
+|------|--------|-----|
+| STT (voz → texto) | Nova Sonic 2 (`amazon.nova-2-sonic-v1:0`) | Lex locale speech model |
+| Orquestación / LLM | Nova Pro (`us.amazon.nova-pro-v1:0`) | Q Connect AI Agent |
+| TTS (texto → voz) | Nova Sonic 2 (a través de Lex/Connect) | Respuestas de Valentina en voz |
 
 ### AWS Lambda
 Todas las funciones usan alias `:live` (Provisioned Concurrency activado para eliminar cold starts).
@@ -132,7 +146,7 @@ Todas las funciones usan alias `:live` (Provisioned Concurrency activado para el
 | Función | Responsabilidad | Timeout Connect |
 |---------|----------------|-----------------|
 | `auna-tatuaje-poc-validar-paciente:live` | Busca paciente por DNI en Multisede (`/search-patient`, `/insurance-client`) | 8s |
-| `auna-tatuaje-poc-disponibilidad:live` | Consulta slots disponibles en `/availability/v2/pe`, filtra por centerId y preferencias día/horario. Ventana: hoy (UTC-5) + 60 días | 8s |
+| `auna-tatuaje-poc-disponibilidad:live` (v11) | Consulta slots disponibles en `/availability/v2/pe`, filtra por centerId y preferencias día/horario. Soporta paginación (`pagina` 0-3, 3 slots/página). Retorna `hay_mas`, `opciones_texto_con_pregunta`. Ventana: hoy (UTC-5) + 60 días | 8s |
 | `auna-tatuaje-poc-crear-cita:live` | Crea la cita en Multisede. Verifica idempotencia en DynamoDB antes de llamar la API | 8s |
 | `auna-tatuaje-poc-parser` | Lee CSV de S3, valida, publica 1 mensaje por afiliado en SQS | — |
 | `auna-tatuaje-poc-health-check` | Ping a Multisede antes de iniciar llamadas. Step Functions lo invoca como Estado 2 | — |
@@ -220,7 +234,7 @@ Todas las funciones usan alias `:live` (Provisioned Concurrency activado para el
 ## Decisiones de arquitectura relevantes
 
 **Por qué MessageParticipant en el flow en lugar del agente leyendo las opciones**  
-El agente de Q in Connect genera su respuesta al mismo tiempo que emite el tool call, antes de que el flow ejecute la Lambda. Cuando el flow vuelve con `opciones_texto` real, el agente ya emitió datos. La solución es que el bloque `play-opciones` en el flow lea el texto de la Lambda directamente en voz alta antes de volver al GCI — el agente nunca tiene que generar ese texto.
+El agente de Q in Connect genera su respuesta al mismo tiempo que emite el tool call, antes de que el flow ejecute la Lambda. Cuando el flow vuelve con `opciones_texto` real, el agente ya emitió datos. Además, `$.Attributes.*` no interpola en el Text del GCI — el agente recibiría string vacío e inventaría opciones. La solución es que el bloque `play-opciones` (MessageParticipant) lea `$.Attributes.opciones_texto_con_pregunta` directamente en voz alta antes de volver al GCI — el agente nunca tiene que generar ese texto. Trade-off: las opciones las lee Lupe (Connect TTS), no Nova Pro.
 
 **Por qué Provisioned Concurrency en alias `:live`**  
 Lambda con `$LATEST` tiene cold starts de 600-900ms que causan silencio perceptible durante la llamada. Con Provisioned Concurrency en una versión publicada (alias `:live`) el container está pre-calentado. Se requiere resource policy explícita en el alias — Connect no hereda la policy de `$LATEST`.

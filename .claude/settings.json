@@ -8,7 +8,9 @@
       "Bash(AWS_PROFILE=auna-sandbox python3 -)",
       "Bash(aws sso:*)",
       "Bash(aws lexv2-models:*)",
-      "Bash(python -c ':*)"
+      "Bash(python -c ':*)",
+      "WebFetch(domain:catalog.workshops.aws)",
+      "WebFetch(domain:rharshad.com)"
     ],
     "additionalDirectories": [
       "C:\\Users\\GabrielPisonero\\.aws"

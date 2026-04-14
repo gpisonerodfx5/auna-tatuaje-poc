@@ -81,13 +81,30 @@ def lambda_handler(event, context):
 def handle_crear_cita(params: dict) -> dict:
     patient_id = params.get("patient_id")
     clinic_history_number = params.get("clinic_history_number")
-    model_id = params.get("model_id")
-    doctor_id = params.get("doctor_id")
-    service_id = params.get("service_id")
-    fecha = params.get("fecha")
-    hora = params.get("hora")
+
+    # opcion_elegida is 1-based index into opciones_N_* contact attributes
+    opcion_elegida = params.get("opcion_elegida", "1")
+    try:
+        idx = int(opcion_elegida) - 1  # convert "1" → 0, "2" → 1, "3" → 2
+    except (ValueError, TypeError):
+        idx = 0
+    idx = max(0, min(idx, 2))  # clamp to 0-2
+
+    # Pull slot data from the indexed opciones_N_* fields
+    prefix = f"opciones_{idx}_"
+    model_id  = params.get(f"{prefix}model_id")  or params.get("model_id")
+    doctor_id = params.get(f"{prefix}doctor_id") or params.get("doctor_id")
+    service_id = params.get(f"{prefix}service_id") or params.get("service_id")
+    fecha     = params.get(f"{prefix}fecha")      or params.get("fecha")
+    hora      = params.get(f"{prefix}hora")       or params.get("hora")
+
+    logger.info(f"opcion_elegida={opcion_elegida} idx={idx} model_id={model_id} doctor_id={doctor_id} fecha={fecha} hora={hora}")
 
     if not all([patient_id, clinic_history_number, model_id, doctor_id, service_id, fecha, hora]):
+        missing = [k for k, v in {"patient_id": patient_id, "clinic_history_number": clinic_history_number,
+                                   "model_id": model_id, "doctor_id": doctor_id, "service_id": service_id,
+                                   "fecha": fecha, "hora": hora}.items() if not v]
+        logger.error(f"Faltan campos: {missing}")
         return {"exito": False, "motivo": "Faltan datos para crear la cita"}
 
     # — Idempotencia: verificar si ya existe cita para este DNI + campana —

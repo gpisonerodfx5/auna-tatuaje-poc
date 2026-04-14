@@ -1,6 +1,7 @@
 {
   "permissions": {
     "allow": [
+      "Bash",
       "Bash(python -m pip install requests --quiet)",
       "Bash(python scripts/discover_ids.py)",
       "Bash(python -c \":*)",

@@ -55,7 +55,7 @@ def lambda_handler(event, context):
 
 def handle_disponibilidad(params: dict) -> dict:
     center_id = int(params.get("center_id", 1))
-    dias_adelante = int(params.get("dias_adelante", 14))
+    dias_adelante = int(params.get("dias_adelante", 60))
     preferencia_dia = params.get("preferencia_dia", "cualquiera")      # "semana" | "finde" | "cualquiera"
     preferencia_horario = params.get("preferencia_horario", "cualquiera")  # "manana" | "tarde" | "cualquiera"
 
@@ -88,7 +88,10 @@ def handle_disponibilidad(params: dict) -> dict:
         emit_metric("SinDisponibilidad", 1, dimensions={"sede": str(center_id)})
         return {"disponible": False, "motivo": "No hay horarios disponibles en su sede"}
 
-    today = datetime.now(timezone.utc).date()
+    # Usar hora peruana (UTC-5) para determinar "hoy" — evita filtrar slots validos
+    # cuando la Lambda corre cerca de medianoche UTC
+    peru_tz = timezone(timedelta(hours=-5))
+    today = datetime.now(peru_tz).date()
     max_date = today + timedelta(days=dias_adelante)
 
     opciones = []
@@ -150,7 +153,7 @@ def handle_disponibilidad(params: dict) -> dict:
     for i, op in enumerate(opciones, 1):
         opciones_texto.append(
             f"Opcion {i}: {op['fecha_display']} a las {op['hora'][:5]} "
-            f"con el doctor {op['doctor_name'].split()[-1]} en {op['center_name']}"
+            f"con {op['doctor_name']} en {op['center_name']}"
         )
 
     return {
@@ -176,7 +179,7 @@ def format_date_spanish(d) -> str:
     days = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"]
     months = ["", "enero", "febrero", "marzo", "abril", "mayo", "junio",
               "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
-    return f"{days[d.weekday()]} {d.day} de {months[d.month]}"
+    return f"{days[d.weekday()]} {d.day} de {months[d.month]} de {d.year}"
 
 
 def get_multisede_token() -> str:
@@ -242,7 +245,9 @@ def extract_params(event: dict) -> dict:
 
 
 def _connect_response(result: dict) -> dict:
-    """Flatten result to string key-value pairs for Connect."""
+    """Flatten result to string key-value pairs for Connect.
+    Also expands opciones list into individual fields opciones_N_* for the flow.
+    """
     flat = {}
     for k, v in result.items():
         if isinstance(v, bool):
@@ -251,6 +256,20 @@ def _connect_response(result: dict) -> dict:
             flat[k] = json.dumps(v, ensure_ascii=False, default=str)
         else:
             flat[k] = str(v) if v is not None else ""
+
+    # Expand opciones list into individual top-level fields so the flow can
+    # save them as contact attributes and pass them to CrearCita later.
+    opciones = result.get("opciones", [])
+    fields = ["model_id", "doctor_id", "doctor_name", "service_id", "center_id",
+              "center_name", "fecha", "hora", "fecha_display"]
+    for i in range(3):
+        for field in fields:
+            key = f"opciones_{i}_{field}"
+            if i < len(opciones):
+                val = opciones[i].get(field, "")
+                flat[key] = str(val) if val is not None else ""
+            else:
+                flat[key] = ""
     return flat
 
 

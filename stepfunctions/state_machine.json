@@ -1,32 +1,69 @@
 {
-  "Comment": "PoC Tatuaje Auna v2.1 — Flujo por afiliado. Disparado por SQS (1 msg = 1 afiliado).",
+  "Comment": "PoC Tatuaje Auna v2.1 - Outbound call orchestrator (1 msg SQS = 1 afiliado)",
   "StartAt": "ValidarHorario",
   "States": {
     "ValidarHorario": {
       "Type": "Choice",
-      "Comment": "Estado 0: Verifica si estamos en horario laboral Peru (L-V 9-19, S 9-13 UTC-5)",
+      "Comment": "Estado 0: Verifica horario laboral Peru. force_run=true salta el check para testing.",
       "Choices": [
         {
-          "And": [
-            {
-              "Variable": "$.force_run",
-              "BooleanEquals": true
-            }
-          ],
+          "Variable": "$.force_run",
+          "BooleanEquals": true,
           "Next": "ConsultarBlacklist"
         }
       ],
-      "Default": "EsperarHorario"
+      "Default": "HealthCheckHorario"
     },
-    "EsperarHorario": {
-      "Type": "Wait",
-      "Comment": "Espera hasta el proximo slot valido de horario laboral",
-      "Seconds": 300,
-      "Next": "ConsultarBlacklist"
+    "HealthCheckHorario": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "arn:aws:lambda:us-east-1:769488154338:function:auna-tatuaje-poc-health-check:live",
+        "Payload": {
+          "action": "check_hours",
+          "call_id.$": "$.call_id"
+        }
+      },
+      "ResultPath": "$.hours_check",
+      "Next": "EsHorarioValido",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.hours_check_error",
+          "Next": "ConsultarBlacklist"
+        }
+      ]
+    },
+    "EsHorarioValido": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.hours_check.Payload.in_working_hours",
+          "BooleanEquals": true,
+          "Next": "ConsultarBlacklist"
+        }
+      ],
+      "Default": "RegistrarFueraHorario"
+    },
+    "RegistrarFueraHorario": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:putItem",
+      "Parameters": {
+        "TableName": "auna-tatuaje-poc-interacciones",
+        "Item": {
+          "call_id": { "S.$": "$.call_id" },
+          "afiliado_dni": { "S.$": "$.dni" },
+          "telefono": { "S.$": "$.telefono" },
+          "resultado": { "S": "fuera_horario" },
+          "timestamp_inicio": { "S.$": "$$.State.EnteredTime" }
+        }
+      },
+      "ResultPath": null,
+      "End": true
     },
     "ConsultarBlacklist": {
       "Type": "Task",
-      "Comment": "Estado 1: Consulta DynamoDB blacklist directamente (sin Lambda)",
+      "Comment": "Estado 1: Consulta DynamoDB blacklist directamente",
       "Resource": "arn:aws:states:::dynamodb:getItem",
       "Parameters": {
         "TableName": "auna-tatuaje-poc-blacklist",
@@ -48,32 +85,43 @@
     },
     "EvaluarBlacklist": {
       "Type": "Choice",
-      "Comment": "Si tiene 3+ intentos fallidos y activo=true, termina",
+      "Comment": "Si activo=true Y intentos_fallidos >= 3, no llamar",
       "Choices": [
         {
           "And": [
-            {
-              "Variable": "$.blacklist_result.Item.activo.BOOL",
-              "BooleanEquals": true
-            },
-            {
-              "Variable": "$.blacklist_result.Item.intentos_fallidos.N",
-              "StringGreaterThanEquals": "3"
-            }
+            { "Variable": "$.blacklist_result.Item", "IsPresent": true },
+            { "Variable": "$.blacklist_result.Item.activo.BOOL", "BooleanEquals": true },
+            { "Variable": "$.blacklist_result.Item.intentos_fallidos.N", "StringGreaterThanEquals": "3" }
           ],
-          "Next": "EnBlacklist"
+          "Next": "RegistrarBlacklist"
         }
       ],
       "Default": "HealthCheck"
     },
-    "EnBlacklist": {
-      "Type": "Succeed",
-      "Comment": "Numero en blacklist, no llamar"
+    "RegistrarBlacklist": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:putItem",
+      "Parameters": {
+        "TableName": "auna-tatuaje-poc-interacciones",
+        "Item": {
+          "call_id": { "S.$": "$.call_id" },
+          "afiliado_dni": { "S.$": "$.dni" },
+          "telefono": { "S.$": "$.telefono" },
+          "resultado": { "S": "en_blacklist" },
+          "timestamp_inicio": { "S.$": "$$.State.EnteredTime" }
+        }
+      },
+      "ResultPath": null,
+      "End": true
     },
     "HealthCheck": {
       "Type": "Task",
       "Comment": "Estado 2: Ping API Multisede via Lambda Health Check",
-      "Resource": "${HealthCheckLambdaArn}",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Parameters": {
+        "FunctionName": "arn:aws:lambda:us-east-1:769488154338:function:auna-tatuaje-poc-health-check:live",
+        "Payload.$": "$"
+      },
       "ResultPath": "$.health",
       "Next": "EvaluarHealthCheck",
       "Retry": [
@@ -83,24 +131,41 @@
           "MaxAttempts": 2,
           "BackoffRate": 2
         }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.health_error",
+          "Next": "RegistrarApiCaida"
+        }
       ]
     },
     "EvaluarHealthCheck": {
       "Type": "Choice",
-      "Comment": "Si API disponible, continuar. Si no, esperar y reintentar.",
       "Choices": [
         {
-          "Variable": "$.health.api_available",
+          "Variable": "$.health.Payload.api_available",
           "BooleanEquals": true,
           "Next": "RegistrarInicio"
         }
       ],
-      "Default": "EsperarAPICaida"
+      "Default": "RegistrarApiCaida"
     },
-    "EsperarAPICaida": {
-      "Type": "Wait",
-      "Seconds": 300,
-      "Next": "HealthCheck"
+    "RegistrarApiCaida": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:putItem",
+      "Parameters": {
+        "TableName": "auna-tatuaje-poc-interacciones",
+        "Item": {
+          "call_id": { "S.$": "$.call_id" },
+          "afiliado_dni": { "S.$": "$.dni" },
+          "telefono": { "S.$": "$.telefono" },
+          "resultado": { "S": "api_caida" },
+          "timestamp_inicio": { "S.$": "$$.State.EnteredTime" }
+        }
+      },
+      "ResultPath": null,
+      "End": true
     },
     "RegistrarInicio": {
       "Type": "Task",
@@ -117,16 +182,77 @@
           "programa": { "S.$": "$.programa" },
           "cuotas_pagadas": { "S.$": "$.cuotas_pagadas" },
           "grupo_cuota": { "S.$": "$.grupo_cuota" },
+          "cod_campana": { "S.$": "$.cod_campana" },
           "timestamp_inicio": { "S.$": "$$.State.EnteredTime" },
-          "resultado": { "S": "iniciando" }
+          "resultado": { "S": "iniciando" },
+          "modelo_usado": { "S": "nova-sonic-2" }
         }
       },
-      "ResultPath": "$.dynamo_result",
-      "Next": "IniciarLlamada"
+      "ResultPath": null,
+      "Next": "IniciarLlamadaConnect"
     },
-    "IniciarLlamada": {
-      "Type": "Succeed",
-      "Comment": "Estado 4: Aqui se invocaria Connect StartOutboundVoiceContact. En la PoC, Connect + Nova Sonic 2 manejan la conversacion y llaman a las Lambdas de accion (validar_paciente, disponibilidad, crear_cita) via tool calls."
+    "IniciarLlamadaConnect": {
+      "Type": "Task",
+      "Comment": "Estado 4: Lanza StartOutboundVoiceContact. El Contact Flow outbound (auna-tatuaje-poc-outbound) recibe los Attributes y corre con Nova Sonic/Nova Pro/Q Connect.",
+      "Resource": "arn:aws:states:::aws-sdk:connect:startOutboundVoiceContact",
+      "Parameters": {
+        "InstanceId": "4830896a-ec8c-4ee7-9499-de31587fbb36",
+        "ContactFlowId": "202c52df-5497-4e4e-a76d-0e6556308910",
+        "DestinationPhoneNumber.$": "$.telefono",
+        "SourcePhoneNumber": "+5116433701",
+        "Attributes": {
+          "call_id.$": "$.call_id",
+          "dni.$": "$.dni",
+          "center_id.$": "$.sede_referencia",
+          "sede_referencia.$": "$.sede_referencia",
+          "programa.$": "$.programa",
+          "nombre_completo.$": "$.nombre_completo",
+          "telefono.$": "$.telefono",
+          "cod_campana.$": "$.cod_campana",
+          "cuotas_pagadas.$": "$.cuotas_pagadas",
+          "grupo_cuota.$": "$.grupo_cuota"
+        }
+      },
+      "ResultPath": "$.connect_result",
+      "Next": "RegistrarLlamadaIniciada",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.ALL"],
+          "ResultPath": "$.connect_error",
+          "Next": "RegistrarErrorConnect"
+        }
+      ]
+    },
+    "RegistrarLlamadaIniciada": {
+      "Type": "Task",
+      "Comment": "Actualiza el registro con el connect_contact_id (para correlacionar con logs de flow)",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "auna-tatuaje-poc-interacciones",
+        "Key": { "call_id": { "S.$": "$.call_id" } },
+        "UpdateExpression": "SET connect_contact_id = :cid, resultado = :res",
+        "ExpressionAttributeValues": {
+          ":cid": { "S.$": "$.connect_result.ContactId" },
+          ":res": { "S": "en_llamada" }
+        }
+      },
+      "ResultPath": null,
+      "End": true
+    },
+    "RegistrarErrorConnect": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Parameters": {
+        "TableName": "auna-tatuaje-poc-interacciones",
+        "Key": { "call_id": { "S.$": "$.call_id" } },
+        "UpdateExpression": "SET resultado = :res, error_detalle = :err",
+        "ExpressionAttributeValues": {
+          ":res": { "S": "error_connect" },
+          ":err": { "S.$": "States.Format('{}', $.connect_error)" }
+        }
+      },
+      "ResultPath": null,
+      "End": true
     }
   }
 }

@@ -24,30 +24,48 @@
 
 ## 3. ARQUITECTURA — FLUJO COMPLETO
 
+### Pipeline outbound (produccion real)
+
 ```
-CSV afiliados (carga manual)
-    ↓
+BASE_MARZO.xlsx
+    ↓ scripts/preprocess_base_marzo.py (xlsx->csv, filtra consentimiento=SI,
+       normaliza telefono +51, mapea distrito_afil->sede_referencia)
+    ↓ upload a S3 (o -s3 flag del script)
 Amazon S3: auna-tatuaje-poc-input-769488154338
     ↓ S3 Event
 Lambda Parser: auna-tatuaje-poc-parser
-    (lee CSV, valida, normaliza, publica 1 msg/afiliado)
+    (lee CSV, valida DNI+telefono, publica 1 msg/afiliado a SQS)
     ↓
 Amazon SQS: auna-tatuaje-poc-llamadas
-    (1 mensaje por afiliado, control de concurrencia)
-    ↓
+    ↓ (1 msg = 1 ejecucion de Step Functions)
 AWS Step Functions: auna-tatuaje-poc-flow
-    ├─ Estado 0: ¿Ventana horaria válida? (L-V 9am-7pm, S 9am-1pm, Perú UTC-5)
-    │             └─ No → Wait state hasta próximo slot
-    ├─ Estado 1: ¿Número en blacklist? → consulta DynamoDB auna-tatuaje-poc-blacklist
-    │             └─ Sí → termina
-    ├─ Estado 2: Lambda HealthCheck → ping API Multisede
-    │             └─ API caída → termina
-    └─ Estado 3: StartOutboundVoiceContact → Amazon Connect
-                  (+576014430375, AMD habilitado — descarta buzones de voz)
+    ├─ ValidarHorario (force_run=true para testing lo salta)
+    ├─ HealthCheckHorario -> invoca health-check con action=check_hours
+    │                        Lambda verifica si estamos en L-V 9-19 o S 9-13 Peru
+    ├─ EsHorarioValido (Choice) -> si no, RegistrarFueraHorario -> End
+    ├─ ConsultarBlacklist (DynamoDB GetItem auna-tatuaje-poc-blacklist)
+    ├─ EvaluarBlacklist -> si activo=true y intentos>=3: RegistrarBlacklist -> End
+    ├─ HealthCheck -> invoca health-check (valida API Multisede disponible)
+    ├─ EvaluarHealthCheck -> si api_available=false: RegistrarApiCaida -> End
+    ├─ RegistrarInicio (DynamoDB PutItem con resultado=iniciando)
+    └─ IniciarLlamadaConnect
+            arn:aws:states:::aws-sdk:connect:startOutboundVoiceContact
+            InstanceId: 4830896a-ec8c-4ee7-9499-de31587fbb36
+            ContactFlowId: 202c52df-5497-4e4e-a76d-0e6556308910 (outbound flow)
+            SourcePhoneNumber: +5116433701 (PE) — el DID peruano
+            DestinationPhoneNumber: $.telefono
+            Attributes: { call_id, dni, center_id (de sede_referencia),
+                          sede_referencia, programa, nombre_completo,
+                          telefono, cod_campana, cuotas_pagadas, grupo_cuota }
+            ↓
+        RegistrarLlamadaIniciada (DynamoDB UpdateItem connect_contact_id + resultado=en_llamada)
+            ↓ (error path)
+        RegistrarErrorConnect (DynamoDB UpdateItem con resultado=error_connect + error_detalle)
     ↓ afiliado contesta
-Contact Flow: auna-tatuaje-poc-inbound-test
-    ① set-voice: Lupe, es-US, Generative
-    ② set-demo-attrs: dni=740473, center_id=1  ← datos hardcodeados para PoC
+Contact Flow: auna-tatuaje-poc-outbound (o inbound-test para llamadas entrantes de prueba)
+    ① set-voice: Lupe
+    ② (solo inbound-test) set-demo-attrs: dni=740473, center_id=1  ← datos hardcodeados para testing inbound
+    ② (outbound) las contact attributes vienen del StartOutboundVoiceContact del Step Functions
     ③ invoke-validar: Lambda ValidarPaciente → guarda patient_id, holder_name
     ④ set-q-connect + set-wisdom-data: asocia Q Connect assistant + AI Agent
     ↓
@@ -102,9 +120,14 @@ Contact Flow: auna-tatuaje-poc-inbound-test
 
 ### Amazon Connect
 - Instance ID: `4830896a-ec8c-4ee7-9499-de31587fbb36`
-- Contact Flow: `auna-tatuaje-poc-inbound-test` — ID: `cd86706f-68ea-4909-9e73-1fec3024f87d`
-- Número Colombia: `+576014430375`
-- Log group: `/aws/connect/auna-tatuaje-poc-v2`
+- Contact Flow INBOUND: `auna-tatuaje-poc-inbound-test` — ID: `cd86706f-68ea-4909-9e73-1fec3024f87d` — **sincronizado a v48** (con set-demo-attrs hardcoded)
+- Contact Flow OUTBOUND: `auna-tatuaje-poc-outbound` — ID: `202c52df-5497-4e4e-a76d-0e6556308910` — **sincronizado a v48** (sin set-demo-attrs; contact attributes vienen del StartOutboundVoiceContact API call)
+- **Números claimed:**
+  - `+5116433701` (PE) — Peru
+  - `+576014430375` (CO) — Colombia — "Auna Tatuaje PoC - Colombia"
+  - `+18584776876` (US) — "PoC Tatuaje - source outbound"
+- Todas las pruebas de esta sesión fueron INBOUND al número Colombia. Peru también es inbound (al mismo flow inbound-test v48).
+- Log group: `/aws/connect/auna-tatuaje-poc`
 
 ### Amazon Lex V2
 - Bot: `auna-valentina-v5` — Bot ID: `EWU1UPLT9U`

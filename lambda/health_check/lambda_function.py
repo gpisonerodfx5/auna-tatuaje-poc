@@ -1,6 +1,7 @@
 """
 Lambda Health Check — PoC Tatuaje Auna v2
 Valida que la API Multisede esté disponible antes de iniciar llamadas.
+Tambien soporta action="check_hours" para validar horario laboral Peru.
 Invocada por Step Functions como primer paso del flujo.
 """
 
@@ -9,7 +10,7 @@ import json
 import logging
 import os
 import requests
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -20,16 +21,38 @@ MULTISEDE_BASE_URL = os.environ.get(
 )
 SECRETS_MULTISEDE_ARN = os.environ.get("SECRETS_MULTISEDE_ARN", "")
 
+# Horario laboral Peru: L-V 9:00-19:00, S 9:00-13:00 (hora Peru, UTC-5)
+PERU_TZ = timezone(timedelta(hours=-5))
+
+
+def _in_working_hours() -> bool:
+    now_peru = datetime.now(PERU_TZ)
+    weekday = now_peru.weekday()  # 0=lunes ... 6=domingo
+    hour = now_peru.hour
+    if weekday <= 4:  # Lunes a Viernes
+        return 9 <= hour < 19
+    if weekday == 5:  # Sabado
+        return 9 <= hour < 13
+    return False  # Domingo
+
 
 def lambda_handler(event, context):
     """
-    Intenta autenticarse en Multisede.
-    Retorna {"api_available": true/false} para que Step Functions decida.
+    Si event.action == "check_hours": retorna {"in_working_hours": true/false}.
+    En otro caso: intenta autenticarse en Multisede y retorna {"api_available": true/false}.
     Connect: retorna flat string dict con campo 'message' para TTS.
     """
-    logger.info("Health check iniciado")
     is_connect = "Details" in event
+    action = event.get("action", "") if isinstance(event, dict) else ""
 
+    # Action: check_hours (llamado desde Step Functions antes de la llamada)
+    if action == "check_hours":
+        in_hours = _in_working_hours()
+        logger.info(f"check_hours: in_working_hours={in_hours}")
+        return {"in_working_hours": in_hours, "timestamp": datetime.now(timezone.utc).isoformat()}
+
+    # Default action: API Multisede health check
+    logger.info("Health check iniciado")
     try:
         username, password = get_credentials()
 
@@ -50,21 +73,27 @@ def lambda_handler(event, context):
                 }
                 return _connect_response(result) if is_connect else result
 
-        # API not available — raise so Connect routes to error path (no call should proceed)
+        # API not available — return available=false so Step Functions routes to fallback
         msg = f"API Multisede no disponible (HTTP {response.status_code})"
         logger.warning(f"Health check FAILED — {msg}")
-        raise RuntimeError(msg)
+        if is_connect:
+            raise RuntimeError(msg)
+        return {"api_available": False, "error": msg}
 
     except requests.exceptions.Timeout:
         logger.error("Health check TIMEOUT")
-        raise RuntimeError("API Multisede no responde (timeout)")
+        if is_connect:
+            raise RuntimeError("API Multisede no responde (timeout)")
+        return {"api_available": False, "error": "timeout"}
 
     except RuntimeError:
-        raise  # re-raise our own errors
+        raise  # re-raise for Connect path
 
     except Exception as e:
         logger.error(f"Health check ERROR: {e}")
-        raise RuntimeError(f"Health check error: {e}") from e
+        if is_connect:
+            raise RuntimeError(f"Health check error: {e}") from e
+        return {"api_available": False, "error": str(e)}
 
 
 def _connect_response(result: dict) -> dict:

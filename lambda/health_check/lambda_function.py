@@ -111,9 +111,9 @@ def _connect_response(result: dict) -> dict:
 
 def get_credentials() -> tuple:
     if not SECRETS_MULTISEDE_ARN:
-        return (
-            os.environ.get("MULTISEDE_USERNAME", "ext2700"),
-            os.environ.get("MULTISEDE_PASSWORD", "Auna2026"),
+        raise RuntimeError(
+            "SECRETS_MULTISEDE_ARN env var no configurada. "
+            "Crear secret en Secrets Manager con {username, password} y exportar su ARN."
         )
     secrets = boto3.client("secretsmanager", region_name="us-east-1")
     secret = secrets.get_secret_value(SecretId=SECRETS_MULTISEDE_ARN)

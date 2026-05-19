@@ -1,18 +1,52 @@
 # -*- coding: utf-8 -*-
 """
-Actualiza el AI Agent auna-valentina-tatuaje con:
-- Tools con schemas correctos (Complete, Escalate, ConsultarDisponibilidad, CrearCita)
-- Prompt con <message> tags obligatorios segun el workshop
+Actualiza UNA versión existente del AI Agent Valentina (prompt + tools).
+
+Para crear el Assistant/Agent/Prompt POR PRIMERA VEZ en una cuenta nueva,
+usar scripts/deploy_qconnect.py.
+
+Configuración: setear estas variables de entorno antes de ejecutar:
+  AWS_PROFILE=<perfil-aws>
+  QCONNECT_ASSISTANT_ID=<id-del-assistant>
+  QCONNECT_AI_AGENT_ID=<id-del-ai-agent>
+  QCONNECT_PROMPT_ID=<id-del-prompt>
+  CONNECT_INSTANCE_ARN=arn:aws:connect:us-east-1:<account>:instance/<connect-instance-id>
+
+Uso:
+    python scripts/update_ai_agent.py
+
+Hace, en orden:
+  1. update_ai_prompt + create_ai_prompt_version → nueva versión :N
+  2. update_ai_agent (con prompt versión :N + tools actuales)
+     + create_ai_agent_version → nueva versión :N
+  3. update_assistant_ai_agent(orchestratorUseCase="Connect.SelfService")
+     → CRÍTICO para que Q in Connect use este agente en lugar del SYSTEM default.
 """
-import boto3, json
+import boto3
+import json
+import os
+import sys
 
-session = boto3.Session(profile_name="auna-sandbox", region_name="us-east-1")
-qc = session.client("qconnect", region_name="us-east-1")
+AWS_PROFILE  = os.environ.get("AWS_PROFILE", "default")
+AWS_REGION   = os.environ.get("AWS_REGION", "us-east-1")
+ASSISTANT_ID = os.environ.get("QCONNECT_ASSISTANT_ID")
+AI_AGENT_ID  = os.environ.get("QCONNECT_AI_AGENT_ID")
+PROMPT_ID    = os.environ.get("QCONNECT_PROMPT_ID")
+CONNECT_ARN  = os.environ.get("CONNECT_INSTANCE_ARN")
 
-ASSISTANT_ID = "bac452c1-14b3-4252-8c5a-af9e02faca9a"
-AI_AGENT_ID  = "680d88d1-66c1-4fa9-b882-d14649de998a"
-PROMPT_ID    = "2d469377-a25a-42c2-ad78-44055b5259d3"
-CONNECT_ARN  = "arn:aws:connect:us-east-1:769488154338:instance/4830896a-ec8c-4ee7-9499-de31587fbb36"
+_missing = [k for k, v in {
+    "QCONNECT_ASSISTANT_ID": ASSISTANT_ID,
+    "QCONNECT_AI_AGENT_ID":  AI_AGENT_ID,
+    "QCONNECT_PROMPT_ID":    PROMPT_ID,
+    "CONNECT_INSTANCE_ARN":  CONNECT_ARN,
+}.items() if not v]
+if _missing:
+    print(f"[ERROR] Faltan variables de entorno: {', '.join(_missing)}")
+    print("Ver el docstring de este script para la configuración requerida.")
+    sys.exit(1)
+
+session = boto3.Session(profile_name=AWS_PROFILE, region_name=AWS_REGION)
+qc = session.client("qconnect", region_name=AWS_REGION)
 
 # ── PASO 1: Actualizar el prompt ──────────────────────────────────────────────
 # NOTA: $.contactAttributes.* NO son variables validas en prompts de Q Connect.

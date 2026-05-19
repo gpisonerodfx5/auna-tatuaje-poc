@@ -241,26 +241,28 @@ Cruce 09.03  | Cruce 16.03
 
 ---
 
-## Muestra de 5 registros reales (hoja 6 a 11)
+## Muestra de 5 registros (sanitizada — DNIs / nombres / teléfonos ficticios)
 
 ```
-DNI: 001937706 | Rodriguez Guarata Erick Noel | +51923763700
+DNI: 99999991 | Apellido Apellido Nombre Ficticio Uno | +51900000001
   Programa: ONCOCLASICO PRO | Distrito: BELLAVISTA → centerId=15
   Cuotas: 7 | Grupo: 4 a 7 meses | Consentimiento: SI
 
-DNI: 76365787 | Chipa Inca Luis Fernando | +51956165138
+DNI: 99999992 | Apellido Apellido Nombre Ficticio Dos | +51900000002
   Programa: ONCOPLUS | Distrito: LIMA → centerId=4
   Cuotas: 8 | Grupo: 8 a 12 meses | Consentimiento: SI
 
-DNI: 002709141 | Montilla Escobar Bety Del Carmen | +51917419456
+DNI: 99999993 | Apellido Apellido Nombre Ficticio Tres | +51900000003
   Programa: ONCOPLUS | Distrito: LIMA → centerId=4
   Cuotas: 11 | Grupo: 8 a 12 meses | Consentimiento: No ← EXCLUIR
 
-DNI: 193947740 | Sulbaran Villarroel Nicole Stilyn Del Valle | +51959286773
+DNI: 99999994 | Apellido Apellido Nombre Ficticio Cuatro | +51900000004
   Programa: ONCOPLUS | Distrito: MIRAFLORES → centerId=11
   Cuotas: 6 | Grupo: 4 a 7 meses | Consentimiento: SI
 
-DNI: 003584897 (pasaporte VEN) | Sulbaran Villarroel Nicole | +51959286773
+DNI: 99999995 (pasaporte ficticio) | Apellido Nombre Ficticio Cinco | +51900000005
   Programa: ONCOPLUS | Distrito: MIRAFLORES → centerId=11
   Cuotas: 6 | Grupo: 4 a 7 meses | Consentimiento: SI
 ```
+
+> Los registros reales viven en el xlsx mensual que entrega Auna. Este repo NO debe contener datos personales.

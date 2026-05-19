@@ -1,133 +1,97 @@
 """
-Empaqueta las Lambdas v2.1 con sus dependencias para despliegue en AWS.
+Empaqueta las 5 Lambdas + layer compartido `requests` (Linux x86_64, py3.12).
 
-Ejecutar: python scripts/package_lambdas.py
+Uso:
+    python scripts/package_lambdas.py
+
 Genera:
-  - dist/parser.zip
-  - dist/health_check.zip
-  - dist/validar_paciente.zip
-  - dist/disponibilidad.zip
-  - dist/crear_cita.zip
+    dist/parser.zip
+    dist/health_check.zip
+    dist/validar_paciente.zip
+    dist/disponibilidad.zip
+    dist/crear_cita.zip
+    dist/layer_requests.zip  (deps compartidas — montadas como Lambda Layer)
+
+Notas:
+- Cada zip de Lambda contiene SOLO el código (lambda_function.py).
+- Las dependencias externas (requests) van en el Layer compartido,
+  para que las Lambdas pesen pocos KB y compartan el mismo `requests` cacheado.
+- El layer se compila con --platform manylinux2014_x86_64 --python-version 3.12
+  para asegurar compatibilidad con el runtime de Lambda.
 """
 
 import os
-import subprocess
 import shutil
-import zipfile
+import subprocess
 import sys
 import tempfile
+import zipfile
+from pathlib import Path
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DIST_DIR = os.path.join(BASE_DIR, "dist")
+ROOT = Path(__file__).resolve().parent.parent
+DIST = ROOT / "dist"
+LAMBDA_DIR = ROOT / "lambda"
 
-# Usar tempdir fuera de OneDrive para evitar PermissionError
-TEMP_BASE = tempfile.mkdtemp(prefix="auna_pkg_")
-
-
-def package_lambda(name: str, source_dir: str, dependencies: list[str] = None):
-    """Empaqueta una Lambda con sus dependencias en un ZIP."""
-    print(f"\n--- Empaquetando {name} ---")
-
-    zip_path = os.path.join(DIST_DIR, f"{name}.zip")
-    temp_dir = os.path.join(TEMP_BASE, f"_temp_{name}")
-
-    if os.path.exists(temp_dir):
-        shutil.rmtree(temp_dir)
-    os.makedirs(temp_dir, exist_ok=True)
-
-    source_file = os.path.join(source_dir, "lambda_function.py")
-    if not os.path.exists(source_file):
-        print(f"  [ERROR] No encontrado: {source_file}")
-        return None
-    shutil.copy2(source_file, temp_dir)
-    print(f"  Copiado: lambda_function.py")
-
-    if dependencies:
-        print(f"  Instalando dependencias: {', '.join(dependencies)}")
-        subprocess.run(
-            [sys.executable, "-m", "pip", "install"] + dependencies
-            + ["-t", temp_dir, "--quiet", "--no-cache-dir"],
-            check=True,
-        )
-
-    if os.path.exists(zip_path):
-        os.remove(zip_path)
-
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for root, dirs, files in os.walk(temp_dir):
-            for file in files:
-                file_path = os.path.join(root, file)
-                arcname = os.path.relpath(file_path, temp_dir)
-                zf.write(file_path, arcname)
-
-    shutil.rmtree(temp_dir)
-
-    size_mb = os.path.getsize(zip_path) / (1024 * 1024)
-    print(f"  [OK] {zip_path} ({size_mb:.1f} MB)")
-
-    return zip_path
+LAMBDAS = ["parser", "health_check", "validar_paciente", "disponibilidad", "crear_cita"]
+LAYER_DEPS = ["requests"]
+PY_VERSION = "3.12"
 
 
-def main():
-    os.makedirs(DIST_DIR, exist_ok=True)
+def zip_lambda(name: str) -> Path:
+    src = LAMBDA_DIR / name / "lambda_function.py"
+    if not src.exists():
+        raise FileNotFoundError(src)
+    out = DIST / f"{name}.zip"
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.write(src, "lambda_function.py")
+    print(f"  [OK] {out.name} ({out.stat().st_size:,} bytes)")
+    return out
 
-    # Lambda Parser — solo boto3 (incluido en runtime)
-    package_lambda(
-        name="parser",
-        source_dir=os.path.join(BASE_DIR, "lambda", "parser"),
-        dependencies=None,
+
+def build_layer() -> Path:
+    tmp = Path(tempfile.mkdtemp(prefix="auna_layer_"))
+    python_dir = tmp / "python"
+    python_dir.mkdir(parents=True)
+    print(f"  Instalando {LAYER_DEPS} para Linux x86_64 / py{PY_VERSION}...")
+    subprocess.run(
+        [
+            sys.executable, "-m", "pip", "install",
+            "--platform", "manylinux2014_x86_64",
+            "--target", str(python_dir),
+            "--implementation", "cp",
+            "--python-version", PY_VERSION,
+            "--only-binary=:all:",
+            "--upgrade",
+            "--quiet",
+            *LAYER_DEPS,
+        ],
+        check=True,
     )
+    out = DIST / "layer_requests.zip"
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in python_dir.rglob("*"):
+            if f.is_file():
+                zf.write(f, f.relative_to(tmp))
+    shutil.rmtree(tmp, ignore_errors=True)
+    print(f"  [OK] {out.name} ({out.stat().st_size:,} bytes)")
+    return out
 
-    # Lambda Health Check — necesita requests
-    package_lambda(
-        name="health_check",
-        source_dir=os.path.join(BASE_DIR, "lambda", "health_check"),
-        dependencies=["requests"],
-    )
 
-    # Lambda ValidarPaciente — necesita requests
-    package_lambda(
-        name="validar_paciente",
-        source_dir=os.path.join(BASE_DIR, "lambda", "validar_paciente"),
-        dependencies=["requests"],
-    )
-
-    # Lambda ConsultarDisponibilidad — necesita requests
-    package_lambda(
-        name="disponibilidad",
-        source_dir=os.path.join(BASE_DIR, "lambda", "disponibilidad"),
-        dependencies=["requests"],
-    )
-
-    # Lambda CrearCita — necesita requests
-    package_lambda(
-        name="crear_cita",
-        source_dir=os.path.join(BASE_DIR, "lambda", "crear_cita"),
-        dependencies=["requests"],
-    )
-
-    # Limpiar temp base
-    shutil.rmtree(TEMP_BASE, ignore_errors=True)
-
-    print(f"\n{'='*50}")
-    print(f"[OK] ZIPs listos en {DIST_DIR}/")
-
-    lambdas = {
-        "parser":            "auna-tatuaje-poc-parser",
-        "health_check":      "auna-tatuaje-poc-health-check",
-        "validar_paciente":  "auna-tatuaje-poc-validar-paciente",
-        "disponibilidad":    "auna-tatuaje-poc-disponibilidad",
-        "crear_cita":        "auna-tatuaje-poc-crear-cita",
-    }
-
-    print(f"\nPara desplegar:")
-    for zip_name, func_name in lambdas.items():
-        print(f"  aws lambda update-function-code \\")
-        print(f"    --function-name {func_name} \\")
-        print(f"    --zip-file fileb://dist/{zip_name}.zip \\")
-        print(f"    --region us-east-1")
-        print()
+def main() -> int:
+    DIST.mkdir(exist_ok=True)
+    print("[1/2] Empaquetando Lambdas (solo código)...")
+    for name in LAMBDAS:
+        zip_lambda(name)
+    print()
+    print("[2/2] Construyendo Lambda Layer compartido...")
+    build_layer()
+    print()
+    print(f"Listo. Outputs en: {DIST}/")
+    print()
+    print("Para desplegarlas, ejecutar:")
+    print("    python scripts/deploy_lambdas.py --profile <perfil-aws>")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

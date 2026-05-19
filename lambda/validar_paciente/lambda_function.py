@@ -181,8 +181,10 @@ def get_multisede_token() -> str:
 
 def get_credentials() -> tuple:
     if not SECRETS_MULTISEDE_ARN:
-        return (os.environ.get("MULTISEDE_USERNAME", "ext2700"),
-                os.environ.get("MULTISEDE_PASSWORD", "Auna2026"))
+        raise RuntimeError(
+            "SECRETS_MULTISEDE_ARN env var no configurada. "
+            "Crear secret en Secrets Manager con {username, password} y exportar su ARN."
+        )
     secret = secrets_client.get_secret_value(SecretId=SECRETS_MULTISEDE_ARN)
     creds = json.loads(secret["SecretString"])
     return creds["username"], creds["password"]

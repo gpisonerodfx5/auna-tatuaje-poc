@@ -185,7 +185,7 @@ Todas las funciones usan alias `:live` (Provisioned Concurrency activado para el
 
 ### AWS Secrets Manager
 - **Secret:** `auna/multisede/credentials`
-- **Propósito:** Credenciales de acceso a la API Multisede (`ext2700` / `Auna2026`). Las Lambdas las leen en runtime. Token con duración ~19h cacheado en memoria.
+- **Propósito:** Credenciales de acceso a la API Multisede. Las Lambdas las leen en runtime desde Secrets Manager. Token JWT con duración ~19h cacheado en memoria del container.
 
 ### Amazon CloudWatch
 - **Namespace:** `AunaTatuajePoc`

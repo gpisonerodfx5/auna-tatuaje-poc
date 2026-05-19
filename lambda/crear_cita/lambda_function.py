@@ -199,7 +199,7 @@ def handle_crear_cita(params: dict) -> dict:
             f"{MULTISEDE_BASE_URL}/appointments/v3/pe",
             headers=headers,
             json=body,
-            timeout=6,  # Connect has 8s Lambda timeout; keep headroom
+            timeout=7,  # Connect corta la invocación a los 8s; 7s deja 1s de headroom
         )
     except requests.exceptions.Timeout:
         # Multisede sometimes accepts the appointment but takes >6s to respond.

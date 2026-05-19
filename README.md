@@ -48,7 +48,7 @@ Toda la conversación sucede en español peruano, con voz Nova Sonic 2.
 
 ## 2. Arquitectura
 
-![Arquitectura](Arquitectura%20Final%20Tatuaje%201.1,%201.2,%201.3.png)
+![Arquitectura](Arquitectura%20V3.png)
 
 ### Flujo outbound (productivo)
 
@@ -126,7 +126,7 @@ Nova Pro tiende a **alucinar** fechas, horarios y nombres de doctores cuando se 
 ├── CLAUDE.md                              ← contexto técnico denso (estado real desplegado)
 ├── BASE_MARZO_context.md                  ← spec del xlsx mensual de Auna
 ├── API-Buscar-pacientes-y-citas-documentation.md  ← spec de Multisede API
-├── Arquitectura Final Tatuaje 1.1, 1.2, 1.3.png   ← diagrama
+├── Arquitectura V3.png                            ← diagrama de arquitectura
 │
 ├── lambda/                                ← código de las 5 Lambdas
 │   ├── parser/lambda_function.py          ← lee CSV S3 → SQS

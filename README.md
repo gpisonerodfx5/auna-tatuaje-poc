@@ -16,10 +16,11 @@ PoC end-to-end de un agente de voz IA conversacional **("Valentina")** que llama
 4. [Estructura del repositorio](#4-estructura-del-repositorio)
 5. [Pre-requisitos](#5-pre-requisitos)
 6. [Permisos IAM necesarios](#6-permisos-iam-necesarios)
-7. [Despliegue paso a paso](#7-despliegue-paso-a-paso)
-8. [Operación — pipeline mensual de llamadas](#8-operación--pipeline-mensual-de-llamadas)
-9. [Iterar sobre el prompt o las tools](#9-iterar-sobre-el-prompt-o-las-tools)
-10. [Monitoreo y observabilidad](#10-monitoreo-y-observabilidad)
+7. [Tagging obligatorio (AWS Partner Network)](#7-tagging-obligatorio-aws-partner-network)
+8. [Despliegue paso a paso](#8-despliegue-paso-a-paso)
+9. [Operación — pipeline mensual de llamadas](#9-operación--pipeline-mensual-de-llamadas)
+10. [Iterar sobre el prompt o las tools](#10-iterar-sobre-el-prompt-o-las-tools)
+11. [Monitoreo y observabilidad](#11-monitoreo-y-observabilidad)
 
 ---
 
@@ -138,6 +139,8 @@ Nova Pro tiende a **alucinar** fechas, horarios y nombres de doctores cuando se 
 │   ├── deploy_lambdas.py                  ← upload + alias :live
 │   ├── deploy_qconnect.py                 ← Q in Connect Assistant + AI Agent + binding
 │   ├── update_ai_agent.py                 ← actualizar prompt / tools del agente existente
+│   ├── retag_resources.py                 ← auditor de tags (CLI + Lambda handler)
+│   ├── deploy_retagger.py                 ← deploy del auditor como Lambda + EventBridge semanal
 │   └── preprocess_base_marzo.py           ← xlsx → CSV
 │
 ├── stepfunctions/
@@ -262,6 +265,33 @@ aws resourcegroupstaggingapi get-resources \
 
 > **Nota legal:** DFX5 no recolecta ningún dato a partir de estos tags. AWS los usa exclusivamente para enviarle a DFX5 reportes de spending agregado por partner. Esta cláusula debe incluirse en el SoW del cliente, donde el cliente acepta los tags y se compromete a no modificarlos ni eliminarlos.
 
+### Auditoría semanal automática
+
+Para detectar y corregir recursos que se creen sin el tag (por ejemplo si alguien crea un recurso desde la consola web sin acordarse), el repo incluye un **auditor automático**:
+
+```bash
+# Auditoría ad-hoc (solo reporta, no modifica)
+python scripts/retag_resources.py --profile <TU_PERFIL>
+
+# Auditoría con corrección automática
+python scripts/retag_resources.py --profile <TU_PERFIL> --apply
+```
+
+Para que la auditoría corra **semanalmente sin intervención**, hay un script de deploy que monta:
+
+- Lambda `auna-tatuaje-poc-retagger` con el código del auditor
+- EventBridge Schedule: cada lunes 9:00 AM hora Perú (14:00 UTC)
+- SNS topic `auna-tatuaje-poc-tagging-alerts` que notifica por email si encuentra recursos sin el tag
+
+```bash
+# Deploy una sola vez (idempotente)
+python scripts/deploy_retagger.py --profile <TU_PERFIL> --notify-email tu@email.com
+```
+
+El Lambda corre en modo `--apply` automáticamente, así que si alguien crea un recurso sin tag entre semanas, el lunes siguiente queda corregido y se notifica por email.
+
+> **Trade-off:** este enfoque es reactivo (delay máximo de 7 días). Para preventivo total, migrar el deploy a IaC (Terraform `default_tags` o CloudFormation stack-level `Tags`) — fuera del scope de esta PoC.
+
 ---
 
 ## 8. Despliegue paso a paso
@@ -269,7 +299,7 @@ aws resourcegroupstaggingapi get-resources \
 > Asumiendo cuenta AWS limpia. Reemplazar `<TU_PERFIL>` por el perfil AWS local.
 > Si una parte ya existe, los scripts son idempotentes y no fallan.
 
-### 7.1. Infra base (DynamoDB, SQS, S3, Secrets, IAM roles, Step Functions, Pipe)
+### 8.1. Infra base (DynamoDB, SQS, S3, Secrets, IAM roles, Step Functions, Pipe)
 
 ```bash
 python scripts/deploy_infra.py --profile <TU_PERFIL>
@@ -277,7 +307,7 @@ python scripts/deploy_infra.py --profile <TU_PERFIL>
 
 Output esperado: confirmaciones de creación o "ya existe" para cada recurso, y la lista de IDs/ARNs creados.
 
-### 7.2. Cargar credenciales Multisede en Secrets Manager
+### 8.2. Cargar credenciales Multisede en Secrets Manager
 
 ```bash
 aws secretsmanager put-secret-value \
@@ -286,7 +316,7 @@ aws secretsmanager put-secret-value \
   --profile <TU_PERFIL> --region us-east-1
 ```
 
-### 7.3. Empaquetar y desplegar las Lambdas
+### 8.3. Empaquetar y desplegar las Lambdas
 
 ```bash
 python scripts/package_lambdas.py
@@ -295,7 +325,7 @@ python scripts/deploy_lambdas.py --profile <TU_PERFIL>
 
 Esto genera 5 ZIPs en `dist/`, 1 layer compartido `auna-tatuaje-poc-deps:N` con `requests`, sube cada Lambda, publica una versión nueva y apunta alias `:live` a esa versión.
 
-### 7.4. Conectar S3 → Lambda Parser
+### 8.4. Conectar S3 → Lambda Parser
 
 ```bash
 # Agregar permission para que S3 invoque la Lambda
@@ -323,7 +353,7 @@ aws s3api put-bucket-notification-configuration \
   --profile <TU_PERFIL>
 ```
 
-### 7.5. Crear Amazon Connect instance
+### 8.5. Crear Amazon Connect instance
 
 ```bash
 # Crear el service-linked role primero (una sola vez por cuenta)
@@ -341,7 +371,7 @@ aws connect create-instance \
 
 Esperar ~30-60s hasta que `DescribeInstance` devuelva `InstanceStatus: ACTIVE`. Guardá el `Id` que retorna — lo necesitás para los pasos siguientes.
 
-### 7.6. Asociar las Lambdas al Connect instance
+### 8.6. Asociar las Lambdas al Connect instance
 
 ```bash
 for fn in auna-tatuaje-poc-validar-paciente auna-tatuaje-poc-disponibilidad auna-tatuaje-poc-crear-cita auna-tatuaje-poc-health-check; do
@@ -354,7 +384,7 @@ done
 
 > ⚠️ **Importante:** usar el qualifier `:live` en el ARN. Si lo asocias sin alias, los Contact Flows que invoquen `<arn>:live` fallarán silenciosamente.
 
-### 7.7. Crear el bot Lex V2 con Nova Sonic 2
+### 8.7. Crear el bot Lex V2 con Nova Sonic 2
 
 ```bash
 # Crear bot
@@ -409,7 +439,7 @@ aws connect associate-bot \
   --profile <TU_PERFIL> --region us-east-1
 ```
 
-### 7.8. Desplegar Q in Connect (Assistant + AI Agent + AI Prompt)
+### 8.8. Desplegar Q in Connect (Assistant + AI Agent + AI Prompt)
 
 ```bash
 python scripts/deploy_qconnect.py \
@@ -426,7 +456,7 @@ El script:
 
 Anotar los IDs que imprime al final (`assistant_id`, `agent_id`, `prompt_id`) — los necesitás para los Contact Flows y para `update_ai_agent.py`.
 
-### 7.9. Crear los Contact Flows (inbound + outbound)
+### 8.9. Crear los Contact Flows (inbound + outbound)
 
 Esta parte es manual desde la consola de Amazon Connect porque crear flows complejos vía JSON es propenso a errores y la consola los valida en vivo.
 
@@ -462,7 +492,7 @@ SetLoggingBehavior → SetVoice(Lupe) → SetAttributes(dni=740473,center_id=1)
 
 **Outbound (`auna-tatuaje-poc-outbound`):** estructura idéntica, sin el bloque `SetAttributes(dni=740473,center_id=1)` hardcoded — los attrs vienen del `StartOutboundVoiceContact` que dispara Step Functions.
 
-### 7.10. Claim de número telefónico (DID)
+### 8.10. Claim de número telefónico (DID)
 
 ```bash
 # Listar DIDs disponibles
@@ -486,7 +516,7 @@ aws connect associate-phone-number-contact-flow \
   --profile <TU_PERFIL>
 ```
 
-### 7.11. Actualizar la state machine con los IDs reales
+### 8.11. Actualizar la state machine con los IDs reales
 
 La state machine viene con placeholders en `IniciarLlamadaConnect`. Reemplazarlos:
 
@@ -502,7 +532,7 @@ aws stepfunctions update-state-machine \
   --profile <TU_PERFIL>
 ```
 
-### 7.12. Smoke test end-to-end
+### 8.12. Smoke test end-to-end
 
 ```bash
 # 1) Health check Lambda
@@ -521,7 +551,7 @@ aws lambda invoke --function-name auna-tatuaje-poc-validar-paciente:live \
 
 ---
 
-## 8. Operación — pipeline mensual de llamadas
+## 9. Operación — pipeline mensual de llamadas
 
 Una vez por mes, cuando Auna entrega el archivo `BASE_MARZO.xlsx` (o equivalente para el mes correspondiente):
 
@@ -544,7 +574,7 @@ aws dynamodb scan --table-name auna-tatuaje-poc-interacciones \
 
 ---
 
-## 9. Iterar sobre el prompt o las tools
+## 10. Iterar sobre el prompt o las tools
 
 El prompt de Valentina vive en `scripts/update_ai_agent.py` (variable `NEW_PROMPT`). Para iterar:
 
@@ -571,7 +601,7 @@ El prompt de Valentina vive en `scripts/update_ai_agent.py` (variable `NEW_PROMP
 
 ---
 
-## 10. Monitoreo y observabilidad
+## 11. Monitoreo y observabilidad
 
 | Recurso | Dónde mirar |
 |---------|-------------|

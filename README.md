@@ -213,7 +213,58 @@ El usuario que ejecute los scripts de deploy necesita estos permisos (resumido �
 
 ---
 
-## 7. Despliegue paso a paso
+## 7. Tagging obligatorio (AWS Partner Network)
+
+**TODO** recurso AWS que se cree para esta PoC, en cualquier cuenta (Dev, QA, Prod, cliente o DFX5), debe llevar los siguientes tres tags. **No se deben modificar ni eliminar** — AWS los lee para reportar el spending del partner bajo el programa Partner Revenue Measurement.
+
+| Key | Value | Propósito |
+|-----|-------|-----------|
+| `project` | `auna-tatuaje-poc` | Trazabilidad interna DFX5 / Auna |
+| `env` | `poc` (o `dev` / `qa` / `prod` según corresponda) | Ambiente |
+| `aws-apn-id` | `pc:55xvhbzjwkkzw9hupxc9n3m2l` | Tag oficial AWS Partner Network — categoría **CX** (Contact Center). **NO modificar ni borrar.** |
+
+### Tabla de referencia por categoría (para otros proyectos)
+
+Este PoC es categoría **CX** (Contact Center) porque la pieza central es Amazon Connect. Para otros proyectos, AWS provee tags por categoría:
+
+| Categoría del workload | Valor `aws-apn-id` |
+|------------------------|--------------------|
+| **CX (Contact Center)** ← esta PoC | `pc:55xvhbzjwkkzw9hupxc9n3m2l` |
+| AM3 (Application Modernization) | `pc:2970ipijgpa7de0era0brfjst` |
+| Data | `pc:9jiunck9pluqu5x7mun2wm8hk` |
+| AI/ML | `pc:8qydjzwf0i36m6qgvzu0cphov` |
+| GenAI | `pc:62xmwtqn30ir2mz7f9vp4t19s` |
+| RDS | `pc:bpvp1zwm0mns1r1fwtfkk2q6z` |
+| Fraud Detection | `pc:bdjk48h57gfdp2p9xp2nmnitq` |
+| Intelligenix PCA | `pc:1q4gkk3ur7d4dyec2yo55iq2z` |
+
+> El valor lleva el prefijo `pc:` (sin espacios).
+
+### Cómo se aplican
+
+Los scripts del repo (`scripts/deploy_infra.py`, `scripts/deploy_lambdas.py`, `scripts/deploy_qconnect.py`) ya incluyen los tres tags por defecto en la constante `TAGS`. Los ejemplos manuales (`aws connect claim-phone-number`, `aws lexv2-models create-bot`, etc.) que aparecen en §8 también los traen. Si necesitas agregar el tag a recursos pre-existentes sin re-desplegar:
+
+```bash
+aws resourcegroupstaggingapi tag-resources \
+  --resource-arn-list <ARN1> <ARN2> ... \
+  --tags "project=auna-tatuaje-poc" "env=poc" "aws-apn-id=pc:55xvhbzjwkkzw9hupxc9n3m2l" \
+  --profile <TU_PERFIL> --region us-east-1
+```
+
+Para verificar que todos los recursos del PoC tienen el tag:
+
+```bash
+aws resourcegroupstaggingapi get-resources \
+  --tag-filters "Key=aws-apn-id,Values=pc:55xvhbzjwkkzw9hupxc9n3m2l" \
+  --profile <TU_PERFIL> --region us-east-1 \
+  --query "length(ResourceTagMappingList)"
+```
+
+> **Nota legal:** DFX5 no recolecta ningún dato a partir de estos tags. AWS los usa exclusivamente para enviarle a DFX5 reportes de spending agregado por partner. Esta cláusula debe incluirse en el SoW del cliente, donde el cliente acepta los tags y se compromete a no modificarlos ni eliminarlos.
+
+---
+
+## 8. Despliegue paso a paso
 
 > Asumiendo cuenta AWS limpia. Reemplazar `<TU_PERFIL>` por el perfil AWS local.
 > Si una parte ya existe, los scripts son idempotentes y no fallan.
@@ -284,7 +335,7 @@ aws connect create-instance \
   --identity-management-type CONNECT_MANAGED \
   --instance-alias auna-tatuaje-poc \
   --inbound-calls-enabled --outbound-calls-enabled \
-  --tags project=auna-tatuaje-poc,env=poc \
+  --tags project=auna-tatuaje-poc,env=poc,aws-apn-id=pc:55xvhbzjwkkzw9hupxc9n3m2l \
   --profile <TU_PERFIL> --region us-east-1
 ```
 
@@ -312,7 +363,7 @@ BOT_ID=$(aws lexv2-models create-bot \
   --role-arn "arn:aws:iam::<ACCOUNT_ID>:role/aws-service-role/lexv2.amazonaws.com/AWSServiceRoleForLexV2Bots" \
   --data-privacy childDirected=false \
   --idle-session-ttl-in-seconds 300 \
-  --bot-tags project=auna-tatuaje-poc,env=poc \
+  --bot-tags project=auna-tatuaje-poc,env=poc,aws-apn-id=pc:55xvhbzjwkkzw9hupxc9n3m2l \
   --profile <TU_PERFIL> --region us-east-1 \
   --query "botId" --output text)
 
@@ -347,7 +398,7 @@ aws lexv2-models create-bot-version --bot-id $BOT_ID \
 ALIAS_ID=$(aws lexv2-models create-bot-alias --bot-id $BOT_ID \
   --bot-alias-name prod --bot-version "1" \
   --bot-alias-locale-settings '{"en_US":{"enabled":true}}' \
-  --tags project=auna-tatuaje-poc,env=poc \
+  --tags project=auna-tatuaje-poc,env=poc,aws-apn-id=pc:55xvhbzjwkkzw9hupxc9n3m2l \
   --profile <TU_PERFIL> --region us-east-1 \
   --query "botAliasId" --output text)
 
@@ -424,7 +475,7 @@ aws connect search-available-phone-numbers \
 aws connect claim-phone-number \
   --target-arn "arn:aws:connect:us-east-1:<ACCOUNT_ID>:instance/<CONNECT_INSTANCE_ID>" \
   --phone-number "+51XXXXXXXXX" \
-  --tags project=auna-tatuaje-poc,env=poc \
+  --tags project=auna-tatuaje-poc,env=poc,aws-apn-id=pc:55xvhbzjwkkzw9hupxc9n3m2l \
   --profile <TU_PERFIL>
 
 # Asociar al inbound flow para pruebas

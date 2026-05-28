@@ -36,9 +36,18 @@ from botocore.exceptions import ClientError
 
 ROOT = Path(__file__).resolve().parent.parent
 
-TAGS_KV = [{"Key": "project", "Value": "auna-tatuaje-poc"},
-           {"Key": "env", "Value": "poc"}]
-TAGS_DICT = {"project": "auna-tatuaje-poc", "env": "poc"}
+# Tags estándar — TODOS los recursos del PoC deben llevarlos.
+# - project / env: convención DFX5 para trazabilidad interna.
+# - aws-apn-id: tag oficial de AWS Partner Network (Partner Revenue
+#   Measurement). Valor pc:55xvhbzjwkkzw9hupxc9n3m2l = categoría CX
+#   (Contact Center). NO MODIFICAR NI ELIMINAR — AWS lo usa para
+#   reportar spending del partner.
+TAGS_DICT = {
+    "project": "auna-tatuaje-poc",
+    "env": "poc",
+    "aws-apn-id": "pc:55xvhbzjwkkzw9hupxc9n3m2l",
+}
+TAGS_KV = [{"Key": k, "Value": v} for k, v in TAGS_DICT.items()]
 
 LAMBDA_ROLE_NAME = "auna-tatuaje-poc-lambda-role"
 SFN_ROLE_NAME = "auna-tatuaje-poc-stepfunctions-role"

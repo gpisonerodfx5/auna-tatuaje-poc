@@ -97,7 +97,17 @@ ENV_VARS_COMMON = {
     "MULTISEDE_VISIT_TYPE_ID": "PS",
 }
 
-TAGS = {"project": "auna-tatuaje-poc", "env": "poc"}
+# Tags estándar — TODOS los recursos del PoC deben llevarlos.
+# - project / env: convención DFX5 para trazabilidad interna.
+# - aws-apn-id: tag oficial de AWS Partner Network (Partner Revenue
+#   Measurement). Valor pc:55xvhbzjwkkzw9hupxc9n3m2l = categoría CX
+#   (Contact Center). NO MODIFICAR NI ELIMINAR — AWS lo usa para
+#   reportar spending del partner.
+TAGS = {
+    "project": "auna-tatuaje-poc",
+    "env": "poc",
+    "aws-apn-id": "pc:55xvhbzjwkkzw9hupxc9n3m2l",
+}
 
 
 def publish_or_update_layer(lam, region: str) -> str:
